@@ -1,0 +1,51 @@
+#!/bin/sh
+
+account=""
+password=""
+
+set -e
+
+get_account() {
+  while IFF= read -r line; do
+    account=$(echo $line | awk '{print $1}')
+    password=$(echo $line | awk '{print $2}')
+  done < account
+}
+
+# offline user
+# kick them in the ass and kick them out.
+offline() {
+  curl --request GET 'http://10.10.244.240:8080/Self/login/?302=LI' --header 'Connection: keep-alive'  --silent -v > tmp 2>&1
+  checkcode=$(cat tmp | grep checkcode | sed -n 's/.*value="\([^"]*\)".*/\1/p')
+  # Command can't work when on openwrt device
+  # JSESSIONID=$(cat tmp | awk '/< Set-Cookie: JSESSIONID=/ {match($0, /< Set-Cookie: JSESSIONID=([^;]*)/, arr); print arr[1]}')
+  JSESSIONID=$(cat tmp | grep 'Set-Cookie:' | sed -n 's/^< Set-Cookie: JSESSIONID=\([^;]*\);.*$/\1/p')
+  echo "checkcode: $checkcode"
+  echo "JSESSIONID: $JSESSIONID"
+  curl --request GET 'http://10.10.244.240:8080/Self/login/randomCode' \
+       --header "Cookie: "JSESSIONID=$JSESSIONID"" --silent > /dev/null 2>&1
+  get_account
+  curl --request POST 'http://10.10.244.240:8080/Self/login/verify' \
+       --form "account="$account"" \
+       --form "password="$password"" \
+       --form "checkcode="$checkcode"" \
+       --header "Cookie: "JSESSIONID=$JSESSIONID"" --silent > /dev/null 2>&1
+  curl --request GET 'http://10.10.244.240:8080/Self/dashboard/getOnlineList' \
+       --header "Cookie: "JSESSIONID=$JSESSIONID"" --slient > online.json
+  cat online.json | jq -r '.[] | "\(.mac) \(.sessionId) \(.ip)"' \
+  | while IFS= read -r line; do
+      echo "Online Device Info: $line"
+      mac=$(echo $line | awk '{print $1}')
+      sessionId=$(echo $line | awk '{print $2}')
+      ip=$(echo $line | awk '{print $3}')
+      [ "$mac" = "null" ] && continue
+      [ "$sessionId" = "null" ] && continue
+      [ "$ip" = "null" ] && continue
+      grep -i -q "$mac" white.list && continue
+      curl --request GET "http://10.10.244.240:8080/Self/dashboard/tooffline?sessionid=$sessionId" \
+           --header "Cookie: "JSESSIONID=$JSESSIONID"" --silent \
+           | jq -r '.success' | grep -q "true" && echo "Offline $mac $ip at $(date)" >> offline.log
+  done
+}
+
+offline
