@@ -6,7 +6,7 @@
 
 ## Note
 
-just for NJUPT.
+Just for NJUPT.
 
 ## How to Use it
 
