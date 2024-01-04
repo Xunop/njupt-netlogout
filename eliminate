@@ -1,7 +1,11 @@
-#!/bin/sh
+#!/bin/bash
 
 account=""
 password=""
+my_devices=0
+online_devices=0
+other_devices=0
+JSESSIONID=""
 
 set -e
 
@@ -9,7 +13,7 @@ get_account() {
   while IFF= read -r line; do
     account=$(echo $line | awk '{print $1}')
     password=$(echo $line | awk '{print $2}')
-  done < account
+  done < accounts
 }
 
 # offline user
@@ -24,7 +28,6 @@ offline() {
   echo "JSESSIONID: $JSESSIONID"
   curl --request GET 'http://10.10.244.240:8080/Self/login/randomCode' \
        --header "Cookie: "JSESSIONID=$JSESSIONID"" --silent > /dev/null 2>&1
-  get_account
   curl --request POST 'http://10.10.244.240:8080/Self/login/verify' \
        --form "account="$account"" \
        --form "password="$password"" \
@@ -32,20 +35,86 @@ offline() {
        --header "Cookie: "JSESSIONID=$JSESSIONID"" --silent > /dev/null 2>&1
   curl --request GET 'http://10.10.244.240:8080/Self/dashboard/getOnlineList' \
        --header "Cookie: "JSESSIONID=$JSESSIONID"" --slient > online.json
-  cat online.json | jq -r '.[] | "\(.mac) \(.sessionId) \(.ip)"' \
-  | while IFS= read -r line; do
-      echo "Online Device Info: $line"
+
+  rec_dev_info
+  get_devices
+
+  # If device count less than 4 and my_devices greated than 0: don't offline
+  [ "$online_devices" -lt 4 ] && [ "$my_devices" -gt 0 ] && exit 0
+
+  HRRN
+
+  mac=$(sort -k3,3nr Q | head -n 1 | awk '{print $1}')
+  sessionId=$(sort -k3,3nr Q | head -n 1 | awk '{print $2}')
+  # Offline device
+  curl --request GET "http://10.10.244.240:8080/Self/dashboard/tooffline?sessionid=$sessionId" \
+       --header "Cookie: "JSESSIONID=$JSESSIONID"" --silent \
+       | jq -r '.success' | grep -q "true" && echo "Offline $mac $ip at $(date)" >> offline.log
+
+  logoutCount=$(cat logoutCount | grep -i "$mac" | awk '{print $2}')
+  logoutCount=$(($logoutCount + 1))
+  # Update logoutCount
+  sed -i "s/$mac.*/$mac $logoutCount/g" logoutCount
+}
+
+# ratio = (now - loginTime) / logoutCount
+HRRN() {
+  cat dev.info | while IFS= read -r line; do
       mac=$(echo $line | awk '{print $1}')
       sessionId=$(echo $line | awk '{print $2}')
       ip=$(echo $line | awk '{print $3}')
-      [ "$mac" = "null" ] && continue
-      [ "$sessionId" = "null" ] && continue
-      [ "$ip" = "null" ] && continue
+      loginTime=$(echo $line | awk '{print $4}')
+      userFlow=$(echo $line | awk '{print $5}')
+      userTime=$(echo $line | awk '{print $6}')
+      loginCount=$(echo $line | awk '{print $7}')
+      logoutCount=$(cat logoutCount | grep -i "$mac" | awk '{print $2}')
+
       grep -i -q "$mac" white.list && continue
-      curl --request GET "http://10.10.244.240:8080/Self/dashboard/tooffline?sessionid=$sessionId" \
-           --header "Cookie: "JSESSIONID=$JSESSIONID"" --silent \
-           | jq -r '.success' | grep -q "true" && echo "Offline $mac $ip at $(date)" >> offline.log
+      now=$(date +%s)
+      RR=$(echo "scale=2; ($now - $loginTime) / $logoutCount" | bc)
+      # Update queue
+      sed -i "s/$mac.*/$mac $sessionId $RR/g" Q
   done
 }
 
+# Record devices info
+rec_dev_info() {
+  cat online.json | jq -r '.[] | "\(.mac) \(.sessionId) \(.ip) \(.loginTime) \(.upFlow)"' \
+  | while IFS= read -r line; do
+      mac=$(echo $line | awk '{print $1}')
+      sessionId=$(echo $line | awk '{print $2}')
+      ip=$(echo $line | awk '{print $3}')
+      loginTime=$(echo $line | awk '{print $4}')
+      userFlow=$(echo $line | awk '{print $5}')
+
+      now=$(date +%s)
+      loginTime=$(date -d "$loginTime" +"%s")
+      useTime=$(($now - $loginTime))
+      loginCount=0
+      flowGrouthRate=0
+      if [ -f dev.info ]; then
+        loginCount=$(cat dev.info | grep -i "$mac" | awk '{print $7}')
+        loginCount=$(($loginCount + 1))
+        grep -i -q "$mac" dev.info
+        if [ $? -eq 0 ]; then
+          # preUserFlow=$(cat dev.info | grep -i "$mac" | awk '{print $5}')
+          # flowGrouthRate=$()
+          sed -i "s/$mac.*/$mac $sessionId $ip $loginTime $userFlow $useTime $loginCount/g" dev.info
+        fi
+      else
+        echo "$mac $sessionId $ip $loginTime $userFlow $useTime $loginCount " > dev.info
+      fi
+  done
+}
+
+get_devices() {
+  cat online.json | jq -r '.[] | "\(.mac)"' \
+  | while IFS= read -r line; do
+      mac=$(echo $line | awk '{print $1}')
+      grep -i -q "$mac" white.list && my_devices=$(($my_devices + 1))
+  done
+  other_devices=$(($online_devices - $my_devices))
+}
+
+get_account
 offline
