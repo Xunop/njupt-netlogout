@@ -34,30 +34,29 @@ offline() {
        --form "checkcode="$checkcode"" \
        --header "Cookie: "JSESSIONID=$JSESSIONID"" --silent > /dev/null 2>&1
   curl --request GET 'http://10.10.244.240:8080/Self/dashboard/getOnlineList' \
-       --header "Cookie: "JSESSIONID=$JSESSIONID"" --slient > online.json
+       --header "Cookie: "JSESSIONID=$JSESSIONID"" --silent > online.json
 
+  [ -f offline.log ] || touch offline.log
   rec_dev_info
   get_devices
 
   # If device count less than 4 and my_devices greated than 0: don't offline
   [ "$online_devices" -lt 4 ] && [ "$my_devices" -gt 0 ] && exit 0
 
+  # Generate ratio qeuue
   HRRN
 
-  mac=$(sort -k3,3nr Q | head -n 1 | awk '{print $1}')
-  sessionId=$(sort -k3,3nr Q | head -n 1 | awk '{print $2}')
+  if [ -f Q ]; then
+    mac=$(sort -k3,3nr Q | head -n 1 | awk '{print $1}')
+    sessionId=$(sort -k3,3nr Q | head -n 1 | awk '{print $2}')
+  fi
   # Offline device
-  curl --request GET "http://10.10.244.240:8080/Self/dashboard/tooffline?sessionid=$sessionId" \
+  grep -i -q "$mac" online.json && curl --request GET "http://10.10.244.240:8080/Self/dashboard/tooffline?sessionid=$sessionId" \
        --header "Cookie: "JSESSIONID=$JSESSIONID"" --silent \
        | jq -r '.success' | grep -q "true" && echo "Offline $mac $ip at $(date)" >> offline.log
-
-  logoutCount=$(cat logoutCount | grep -i "$mac" | awk '{print $2}')
-  logoutCount=$(($logoutCount + 1))
-  # Update logoutCount
-  sed -i "s/$mac.*/$mac $logoutCount/g" logoutCount
 }
 
-# ratio = (now - loginTime) / logoutCount
+# ratio = userTime / logoutCount
 HRRN() {
   cat dev.info | while IFS= read -r line; do
       mac=$(echo $line | awk '{print $1}')
@@ -66,14 +65,16 @@ HRRN() {
       loginTime=$(echo $line | awk '{print $4}')
       userFlow=$(echo $line | awk '{print $5}')
       userTime=$(echo $line | awk '{print $6}')
-      loginCount=$(echo $line | awk '{print $7}')
-      logoutCount=$(cat logoutCount | grep -i "$mac" | awk '{print $2}')
+      logoutCount=$(grep -i $mac offline.log | wc -l)
 
       grep -i -q "$mac" white.list && continue
-      now=$(date +%s)
-      RR=$(echo "scale=2; ($now - $loginTime) / $logoutCount" | bc)
+      RR=$(echo "scale=4; $userTime / $logoutCount" | bc)
       # Update queue
-      sed -i "s/$mac.*/$mac $sessionId $RR/g" Q
+      if [ -f Q ]; then
+        sed -i "s/$mac.*/$mac $sessionId $RR/g" Q
+      else
+        echo "$mac $sessionId $RR" > Q
+      fi
   done
 }
 
@@ -90,19 +91,19 @@ rec_dev_info() {
       now=$(date +%s)
       loginTime=$(date -d "$loginTime" +"%s")
       useTime=$(($now - $loginTime))
-      loginCount=0
       flowGrouthRate=0
       if [ -f dev.info ]; then
-        loginCount=$(cat dev.info | grep -i "$mac" | awk '{print $7}')
-        loginCount=$(($loginCount + 1))
         grep -i -q "$mac" dev.info
         if [ $? -eq 0 ]; then
-          # preUserFlow=$(cat dev.info | grep -i "$mac" | awk '{print $5}')
-          # flowGrouthRate=$()
-          sed -i "s/$mac.*/$mac $sessionId $ip $loginTime $userFlow $useTime $loginCount/g" dev.info
+          oldUseTime=$(cat dev.info | grep -i "$mac" | awk '{print $6}')
+          useTime=$(($useTime + $oldUseTime))
+          sed -i "s/$mac.*/$mac $sessionId $ip $loginTime \
+          $userFlow $useTime/g" dev.info
+        else
+          echo "$mac $sessionId $ip $loginTime $userFlow $useTime" >> dev.info
         fi
       else
-        echo "$mac $sessionId $ip $loginTime $userFlow $useTime $loginCount " > dev.info
+        echo "$mac $sessionId $ip $loginTime $userFlow $useTime" > dev.info
       fi
   done
 }
