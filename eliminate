@@ -41,7 +41,7 @@ offline() {
   get_devices
 
   # If device count less than 4 and my_devices greated than 0: don't offline
-  [ "$online_devices" -lt 4 ] && [ "$my_devices" -gt 0 ] && exit 0
+  [ "$online_devices" -lt 4 ] && [ "$my_devices" -gt 0 ] && echo "Don't offline" && return
 
   # Generate ratio qeuue
   HRRN
@@ -68,7 +68,11 @@ HRRN() {
       logoutCount=$(grep -i $mac offline.log | wc -l)
 
       grep -i -q "$mac" white.list && continue
-      RR=$(echo "scale=4; $userTime / $logoutCount" | bc)
+      if [ $logoutCount -eq 0 ]; then
+        RR=0
+      else
+        RR=$(echo "scale=4; $userTime / $logoutCount" | bc)
+      fi
       # Update queue
       if [ -f Q ]; then
         sed -i "s/$mac.*/$mac $sessionId $RR/g" Q
